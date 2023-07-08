@@ -1,27 +1,26 @@
 import { AST } from './ast.js';
 import { Unifier } from './unifier.js';
 import { print } from './util.js';
-
-const { Var } = AST;
+import { Var } from './var.js';
 
 const v = {
-    A: Var<'type-param'>(0),
-    T: Var<'type-param'>(1),
-    U: Var<'type-param'>(2),
+    A: Var<AST.Type.Param>('type:param', 0),
+    T: Var<AST.Type.Param>('type:param', 1),
+    U: Var<AST.Type.Param>('type:param', 2),
 };
 
 const f: AST.Type.Expr = {
-    t: 'type-fun',
-    tparams: [{ t: 'type-param', id: v.A, name: 'A', constraints: [] }],
+    t: 'type:fun',
+    tparams: [{ t: 'type:param', id: v.A, name: 'A', constraints: [] }],
     params: [v.A, v.A],
     ret: v.A,
 };
 
 const g: AST.Type.Expr = {
-    t: 'type-fun',
+    t: 'type:fun',
     tparams: [
-        { t: 'type-param', id: v.T, name: 'T', constraints: [] },
-        { t: 'type-param', id: v.U, name: 'U', constraints: [] },
+        { t: 'type:param', id: v.T, name: 'T', constraints: [] },
+        { t: 'type:param', id: v.U, name: 'U', constraints: [] },
     ],
     params: [v.T, v.U],
     ret: v.U,

@@ -1,17 +1,16 @@
-import type { AST } from './ast.js';
-import type { PartialKey, PartialMap } from './partial-map.js';
+import { AST } from './ast.js';
+import { varis } from './var.js';
 
-export type UnifierExpr = AST.Type.Expr | PartialKey;
+export type UnifierExpr = AST.Type.Expr | AST.Type.Partial.Key;
+
+export type UniVar = AST.Type.Param['id'] | AST.Type.Hole['id'];
 
 export class Unifier {
-    private _pmap: PartialMap | undefined;
-
-    public left: Map<number, UnifierExpr[]>;
-    public right: Map<number, UnifierExpr[]>;
+    public left: Map<UniVar, UnifierExpr[]>;
+    public right: Map<UniVar, UnifierExpr[]>;
     public bindings: UnifierExpr[][];
 
-    constructor(pmap?: PartialMap) {
-        this._pmap = pmap;
+    constructor() {
         this.left = new Map();
         this.right = new Map();
         this.bindings = [];
@@ -21,7 +20,7 @@ export class Unifier {
         return this._unify(lhs, rhs);
     }
 
-    private _unify(lhs: AST.Type.Expr, rhs: AST.Type.Expr, partial?: AST.Type.Partial): boolean {
+    private _unify(lhs: AST.Type.Expr, rhs: AST.Type.Expr, partial?: AST.Type.Partial['id']): boolean {
         if (typeof lhs === 'number') {
             let bindings = this.left.get(lhs);
             if (bindings === undefined) {
@@ -29,10 +28,10 @@ export class Unifier {
                 this.left.set(lhs, bindings);
                 this.bindings.push(bindings);
             }
-            if (typeof rhs !== 'number' && rhs.t === 'type-hole') {
-                const id = partial && this._pmap?.find(partial, rhs);
-                if (id === undefined) throw Error('assertion failed?');
-                bindings.push(id);
+            if (typeof rhs === 'number' && varis(rhs, ['type:hole'])) {
+                if (partial === undefined) throw Error('assertion failed?');
+                const key = AST.Type.Partial.pack(partial, rhs);
+                bindings.push(key);
             } else {
                 bindings.push(rhs);
             }
@@ -45,28 +44,39 @@ export class Unifier {
                 this.right.set(rhs, bindings);
                 this.bindings.push(bindings);
             }
-            if (typeof lhs !== 'number' && lhs.t === 'type-hole') {
-                const id = partial && this._pmap?.find(partial, lhs);
-                if (id === undefined) throw Error('assertion failed?');
-                bindings.push(id);
+            if (typeof lhs === 'number' && varis(lhs, ['type:hole'])) {
+                if (partial === undefined) throw Error('assertion failed?');
+                const key = AST.Type.Partial.pack(partial, lhs);
+                bindings.push(key);
             } else {
                 bindings.push(lhs);
             }
         }
 
         if (typeof lhs === 'number' || typeof rhs === 'number') return true;
+
+        if (lhs.t === 'type:forall') {
+            this._unify(lhs.type, rhs);
+            return true;
+        }
+        if (rhs.t === 'type:forall') {
+            this._unify(lhs, rhs.type);
+            return true;
+        }
+
+        if (lhs.t === 'type:partial') {
+            this._unify(lhs.type, rhs, lhs.id);
+            return true;
+        }
+        if (rhs.t === 'type:partial') {
+            this._unify(lhs, rhs.type, rhs.id);
+            return true;
+        }
+
         if (lhs.t !== rhs.t) return false;
 
         switch (lhs.t) {
-            case 'type-partial': {
-                rhs = rhs as AST.Type.Partial;
-                return this._unify(lhs.type, rhs.type, lhs);
-            }
-
-            case 'type-hole':
-                return true;
-
-            case 'type-apply': {
+            case 'type:apply': {
                 rhs = rhs as AST.Type.Apply;
                 if (lhs.head !== rhs.head) return false;
                 if (lhs.args.length !== rhs.args.length) return false;
@@ -78,7 +88,7 @@ export class Unifier {
                 return true;
             }
 
-            case 'type-tuple': {
+            case 'type:tuple': {
                 rhs = rhs as AST.Type.Tuple;
                 if (lhs.elements.length !== rhs.elements.length) return false;
                 for (let i = 0; i < lhs.elements.length; ++i) {
@@ -89,7 +99,7 @@ export class Unifier {
                 return true;
             }
 
-            case 'type-fun': {
+            case 'type:fun': {
                 rhs = rhs as AST.Type.Fun;
                 if (lhs.params.length !== rhs.params.length) return false;
                 for (let i = 0; i < lhs.params.length; ++i) {
@@ -97,6 +107,7 @@ export class Unifier {
                         return false;
                     }
                 }
+                this._unify(lhs.ret, rhs.ret, partial);
                 return true;
             }
         }
