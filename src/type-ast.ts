@@ -1,4 +1,4 @@
-export type Expr = Forall | Exists | Ref | Var | Fun | Apply;
+export type Expr = Forall | Exists | Hole | Ref | Var | Fun | Apply;
 
 export interface Forall {
     t: 'forall';
@@ -38,6 +38,11 @@ export interface FunHKT {
 }
 
 export type Kind = '*' | FunHKT;
+
+export interface Hole {
+    t: 'hole';
+    id: number;
+}
 
 export interface Ref {
     t: 'ref';

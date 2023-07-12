@@ -1,6 +1,7 @@
 /*
     expr :=
         | quantified
+        | hole
         | ref
         | var
         | fun
@@ -23,18 +24,19 @@
 import type { Expr, FunHKT, Kind } from './type-ast';
 
 // prettier-ignore
-export enum Op {
+export enum TypeOp {
     Forall = 0x00, // Generic function type
     Exists = 0x01, // Existential type
     Kind   = 0x02, // Higher-kinded type
     Constr = 0x03, // Type parameter constraint
-    Ref    = 0x04, // Top-level reference
-    Var    = 0x05, // Bound variable (De Bruijn) index
-    Fun    = 0x06, // Function type
-    Apply  = 0x07, // Application
+    Hole   = 0x04, // Top-level reference
+    Ref    = 0x05, // Top-level reference
+    Var    = 0x06, // Bound variable (De Bruijn) index
+    Fun    = 0x07, // Function type
+    Apply  = 0x08, // Application
 }
 
-export type Instr = Op | number;
+export type Instr = TypeOp | number;
 
 interface State {
     depth: number;
@@ -51,14 +53,14 @@ function* encodeApply(exprs: Value[], state: State): Iterable<Instr> {
         throw Error('invalid length');
     }
     for (let i = 0; i < exprs.length - 1; ++i) {
-        yield Op.Apply;
+        yield TypeOp.Apply;
     }
     for (const e of exprs) {
         yield* _encode(e, state);
     }
 }
 
-function* encodeFun(prefix: Op, exprs: Value[], state: State): Iterable<Instr> {
+function* encodeFun(prefix: TypeOp, exprs: Value[], state: State): Iterable<Instr> {
     // a -> a -> a -> a
     // a -> (a -> a -> a)
     // a -> (a -> (a -> a))
@@ -79,7 +81,7 @@ export function encode(expr: Expr): Instr[] {
 
 function* _encode(expr: Value, state: State): Iterable<Instr> {
     if (expr === '*') {
-        yield Op.Kind;
+        yield TypeOp.Kind;
         return;
     }
 
@@ -91,11 +93,11 @@ function* _encode(expr: Value, state: State): Iterable<Instr> {
                 next.depth += 1;
                 next.bindings.set(param.id, next.depth);
 
-                yield expr.t === 'forall' ? Op.Forall : Op.Exists;
+                yield expr.t === 'forall' ? TypeOp.Forall : TypeOp.Exists;
 
                 if (param.t === 'param-constrained') {
                     for (const { id, args } of param.constraints) {
-                        yield Op.Constr;
+                        yield TypeOp.Constr;
                         const ref: Expr = { t: 'ref', id };
                         if (args.length === 0) {
                             yield* _encode(ref, next);
@@ -114,16 +116,21 @@ function* _encode(expr: Value, state: State): Iterable<Instr> {
         }
 
         case 'fun-hkt':
-            yield* encodeFun(Op.Fun, expr.params, state);
-            yield Op.Kind;
+            yield* encodeFun(TypeOp.Fun, expr.params, state);
+            yield TypeOp.Kind;
             return;
 
         case 'fun':
-            yield* encodeFun(Op.Fun, expr.params, state);
+            yield* encodeFun(TypeOp.Fun, expr.params, state);
+            return;
+
+        case 'hole':
+            yield TypeOp.Hole;
+            yield expr.id;
             return;
 
         case 'ref':
-            yield Op.Ref;
+            yield TypeOp.Ref;
             yield expr.id;
             return;
 
@@ -132,7 +139,7 @@ function* _encode(expr: Value, state: State): Iterable<Instr> {
             if (param === undefined) {
                 throw Error('variable not bound');
             }
-            yield Op.Var;
+            yield TypeOp.Var;
             yield state.depth - param;
             return;
 
@@ -151,6 +158,7 @@ export type Disasm<C extends boolean = true> =
     | { t: 'forall'; range: Range; param?: Disasm<C>; body: Disasm<C> }
     | { t: 'exists'; range: Range; param?: Disasm<C>; body: Disasm<C> }
     | { t: 'fun'; range: Range; param: Disasm<C>; ret: Disasm<C> }
+    | { t: 'hole'; range: Range; id: number }
     | { t: 'ref'; range: Range; id: number }
     | { t: 'var'; range: Range; id: number }
     | { t: 'kind'; range: Range }
@@ -169,11 +177,11 @@ export function disassemble(bytecode: Instr[], offset: number = 0): Disasm {
     }
 
     switch (byte) {
-        case Op.Forall:
-        case Op.Exists: {
-            const t = byte === Op.Forall ? 'forall' : 'exists';
+        case TypeOp.Forall:
+        case TypeOp.Exists: {
+            const t = byte === TypeOp.Forall ? 'forall' : 'exists';
             const peek = bytecode[offset + 1];
-            if (peek === Op.Constr || peek === Op.Fun) {
+            if (peek === TypeOp.Constr || peek === TypeOp.Fun) {
                 const param = disassemble(bytecode, offset + 1);
                 const body = disassemble(bytecode, param.range.end);
                 const range = containing(offset, body.range, param.range);
@@ -185,16 +193,20 @@ export function disassemble(bytecode: Instr[], offset: number = 0): Disasm {
             }
         }
 
-        case Op.Fun: {
+        case TypeOp.Fun: {
             const param = disassemble(bytecode, offset + 1);
             const ret = disassemble(bytecode, param.range.end);
             const range = containing(offset, param.range, ret.range);
             return { t: 'fun', range, param, ret };
         }
 
-        case Op.Ref:
-        case Op.Var: {
-            const t = byte === Op.Ref ? 'ref' : 'var';
+        case TypeOp.Hole:
+        case TypeOp.Ref:
+        case TypeOp.Var: {
+            let t: 'hole' | 'ref' | 'var';
+            if (byte === TypeOp.Hole) t = 'hole';
+            else if (byte === TypeOp.Ref) t = 'ref';
+            else t = 'var';
             if (offset + 1 >= bytecode.length) {
                 throw Error('unexpected end-of-bytecode');
             }
@@ -203,12 +215,12 @@ export function disassemble(bytecode: Instr[], offset: number = 0): Disasm {
             return { t, range, id };
         }
 
-        case Op.Kind: {
+        case TypeOp.Kind: {
             const range = { start: offset, end: offset + 1 };
             return { t: 'kind', range };
         }
 
-        case Op.Constr: {
+        case TypeOp.Constr: {
             let range: Range | undefined;
             let start: number = offset + 1;
             const exprs: Disasm[] = [];
@@ -221,14 +233,14 @@ export function disassemble(bytecode: Instr[], offset: number = 0): Disasm {
                     range = containing(range, expr.range);
                 }
                 exprs.push(expr);
-                if (bytecode[start] !== Op.Constr) {
+                if (bytecode[start] !== TypeOp.Constr) {
                     break;
                 }
             }
             return { t: 'constr', range, exprs };
         }
 
-        case Op.Apply: {
+        case TypeOp.Apply: {
             const head = disassemble(bytecode, offset + 1);
             const arg = disassemble(bytecode, head.range.end);
             const range = containing(offset, head.range, arg.range);
@@ -277,6 +289,9 @@ function _stringify(ir: Disasm, nested?: boolean): string {
             const str = `${param} -> ${ret}`;
             return nested ? `(${str})` : str;
         }
+
+        case 'hole':
+            return `_${ir.id}`;
 
         case 'ref':
             return `#${ir.id}`;
