@@ -54,9 +54,13 @@ export type AST =
     | AST.TypeImpl;
 
 export namespace AST {
+    export type Language = Let | Expr | TypeDef;
+
     export type Entity = ValueEntity | TypeEntity;
+    export type Scope = ValueScope | TypeScope;
 
     export type ValueEntity = Let | Param;
+    export type ValueScope = Block | Fun;
 
     export interface Let {
         t: 'let';
@@ -66,7 +70,15 @@ export namespace AST {
         child: Expr | Type;
     }
 
-    export type Expr = Var | Block | Fun | Apply | Assert;
+    export type Expr = Literal | Var | Block | Fun | Apply | Assert;
+
+    export type Literal = Integer;
+
+    export interface Integer {
+        t: 'integer';
+        parent?: AST;
+        value: number;
+    }
 
     export interface Var {
         t: 'var';
@@ -106,8 +118,15 @@ export namespace AST {
     export interface Assert {
         t: 'assert';
         parent?: AST;
-        expr: Expr;
+        expr?: Expr; // XXX: Do we really need a unary assert?
         type: Type;
+    }
+
+    // TODO
+    export interface Reflect {
+        t: 'reflect';
+        parent?: AST;
+        target: Type;
     }
 
     // TODO
@@ -127,6 +146,7 @@ export namespace AST {
     }
 
     export type TypeEntity = TypeDef | TypeParam;
+    export type TypeScope = Forall | Exists;
 
     export interface TypeDef {
         t: 'type-def';
@@ -136,7 +156,7 @@ export namespace AST {
         type: Type;
     }
 
-    export type Type = TypeVar | Forall | Exists | TypeFun | TypeApply;
+    export type Type = TypeVar | Forall | Exists | TypeFun | TypeApply | Infer;
 
     export interface TypeVar {
         t: 'type-var';
@@ -209,6 +229,12 @@ export namespace AST {
         args: [Type, ...Type[]];
     }
 
+    export interface Infer {
+        t: 'infer';
+        parent?: AST;
+        target: Expr;
+    }
+
     // TODO
     export interface Trait {
         t: 'trait';
@@ -238,6 +264,9 @@ export namespace AST {
             case 'let':
                 return `let ${ast.name} = ${stringify(ast.child)}`;
 
+            case 'integer':
+                return ast.value + '';
+
             case 'var':
             case 'type-var':
                 return ast.name;
@@ -256,7 +285,11 @@ export namespace AST {
                 else return `${stringify(ast.head)}(${ast.args.map(stringify).join(', ')})`;
 
             case 'assert':
-                return `(${stringify(ast.expr)} ${stringify(ast.type)})`;
+                if (ast.expr === undefined) return `(:: ${stringify(ast.type)})`;
+                else return `(:: ${stringify(ast.expr)} ${stringify(ast.type)})`;
+
+            case 'infer':
+                return `infer ${stringify(ast.target)}`;
 
             case 'type-def':
                 return `type ${ast.name} = ${stringify(ast.type)}`;
@@ -293,7 +326,7 @@ export namespace AST {
     }
 }
 
-const KEYWORDS = ['let', 'block', 'fun', '::', 'type', 'forall', 'exists'];
+const KEYWORDS = ['let', 'block', 'fun', '::', 'infer', 'type', 'forall', 'exists'];
 
 const Identifier = transform(atom(/^[a-zA-Z_][a-zA-Z_0-9]*$/), name => {
     if (KEYWORDS.includes(name)) {
@@ -304,8 +337,6 @@ const Identifier = transform(atom(/^[a-zA-Z_][a-zA-Z_0-9]*$/), name => {
 
 type ASTParser<T> = Parser<T, ASTBuilder>;
 
-const Expr: ASTParser<AST.Expr> = lazy(() => or(Var, Block, Fun, Apply, Assert));
-
 const Let: ASTParser<AST.Let> = lazy(() =>
     transform(list(and(atom('let'), Identifier, Expr)), (input, state) =>
         state.create({
@@ -315,6 +346,17 @@ const Let: ASTParser<AST.Let> = lazy(() =>
             child: input[2],
         }),
     ),
+);
+
+const Expr: ASTParser<AST.Expr> = lazy(() => or(Literal, Var, Block, Fun, Apply, Assert));
+
+const Literal = lazy(() => Integer);
+
+const Integer: ASTParser<AST.Integer> = transform(atom(/^(-+)?[0-9]+$/), (input, state) =>
+    state.create({
+        t: 'integer',
+        value: Number.parseInt(input),
+    }),
 );
 
 const Var: ASTParser<AST.Var> = transform(Identifier, (name, state) =>
@@ -357,12 +399,33 @@ const Apply: ASTParser<AST.Apply> = transform(list(and(Expr, star(Expr))), (inpu
     }),
 );
 
-const Assert: ASTParser<AST.Assert> = lazy(() =>
+const Assert: ASTParser<AST.Assert> = lazy(() => or(AssertUnary, AssertBinary));
+
+// XXX: Do we really need this?
+const AssertUnary: ASTParser<AST.Assert> = lazy(() =>
+    transform(list(and(atom('::'), Type)), (input, state) =>
+        state.create({
+            t: 'assert',
+            type: input[1] as any,
+        }),
+    ),
+);
+
+const AssertBinary: ASTParser<AST.Assert> = lazy(() =>
     transform(list(and(atom('::'), Expr, Type)), (input, state) =>
         state.create({
             t: 'assert',
             expr: input[1],
             type: input[2] as any,
+        }),
+    ),
+);
+
+const Infer: ASTParser<AST.Infer> = lazy(() =>
+    transform(list(and(atom('infer'), Expr)), (input, state) =>
+        state.create({
+            t: 'infer',
+            target: input[1],
         }),
     ),
 );
@@ -378,7 +441,7 @@ const TypeDef: ASTParser<AST.TypeDef> = lazy(() =>
     ),
 );
 
-const Type = lazy(() => or(TypeVar, Forall, Exists, TypeFun, TypeApply));
+const Type = lazy(() => or(TypeVar, Forall, Exists, TypeFun, TypeApply, Infer));
 
 const TypeVar: ASTParser<AST.TypeVar> = transform(Identifier, (name, state) =>
     state.create({ t: 'type-var', name }),
@@ -495,4 +558,4 @@ const TypeApply: ASTParser<AST.TypeApply> = lazy(() =>
     ),
 );
 
-export const Language = or(Let, Expr, TypeDef);
+export const Language: ASTParser<AST.Language> = or(Let, Expr, TypeDef);

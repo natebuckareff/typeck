@@ -142,7 +142,10 @@ export const maybe = <T, S>(parser: Parser<T, S>): Parser<T | undefined, S> => {
             return;
         }
         try {
-            return parser(input, state);
+            const clone = input.slice();
+            const result = parser(clone, state);
+            input.splice(0, input.length, ...clone);
+            return result;
         } catch (_) {
             return;
         }

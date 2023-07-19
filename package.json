@@ -3,7 +3,7 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "dev": "tsc-watch --onSuccess \"node --enable-source-maps dist/bintype.js\""
+        "dev": "tsc-watch --onSuccess \"node --enable-source-maps dist/index.js\""
     },
     "devDependencies": {
         "@tsconfig/esm": "^1.0.3",

@@ -1,10 +1,18 @@
-import type { AST } from './ast.js';
+import { Language, type AST } from './ast.js';
+import { Sexpr } from './sexpr.js';
 
 export class ASTBuilder {
     private _ids: number;
 
     constructor() {
         this._ids = 0;
+    }
+
+    *parse(source: string): Iterable<AST.Language> {
+        const sexprs = [...Sexpr.parse(Sexpr.lex(source))];
+        while (sexprs.length > 0) {
+            yield Language(sexprs, this);
+        }
     }
 
     create<const T extends AST>(ast: T): T {
@@ -38,7 +46,9 @@ export class ASTBuilder {
                 break;
 
             case 'assert':
-                ast.expr.parent = ast;
+                if (ast.expr !== undefined) {
+                    ast.expr.parent = ast;
+                }
                 ast.type.parent = ast;
                 break;
 
