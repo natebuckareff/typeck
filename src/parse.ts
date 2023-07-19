@@ -1,9 +1,9 @@
 import type { Sexpr } from './sexpr';
 
 export type Input = Sexpr[];
-export type Parser<T> = (input: Input) => T;
+export type Parser<T, S> = (input: Input, state: S) => T;
 
-export const atom = (arg: string | RegExp | ((x: string) => boolean)): Parser<string> => {
+export const atom = (arg: string | RegExp | ((x: string) => boolean)): Parser<string, any> => {
     if (typeof arg === 'string') {
         return (input: Input): string => {
             const sexpr = input.shift();
@@ -40,14 +40,14 @@ export const atom = (arg: string | RegExp | ((x: string) => boolean)): Parser<st
     }
 };
 
-export const list = <T>(parser: Parser<T>): Parser<T> => {
-    return (input: Input): T => {
+export const list = <T, S>(parser: Parser<T, S>): Parser<T, S> => {
+    return (input, state): T => {
         const sexpr = input.shift();
         if (!Array.isArray(sexpr)) {
             throw Error('expected list');
         }
         const items = sexpr.slice();
-        const result = parser(items);
+        const result = parser(items, state);
         if (items.length > 0) {
             throw Error('unexpected list item');
         }
@@ -55,15 +55,15 @@ export const list = <T>(parser: Parser<T>): Parser<T> => {
     };
 };
 
-export const star = <T>(parser: Parser<T>): Parser<T[]> => {
-    return (input: Input): T[] => {
+export const star = <T, S>(parser: Parser<T, S>): Parser<T[], S> => {
+    return (input, state): T[] => {
         const output: T[] = [];
         while (true) {
             if (input.length === 0) {
                 break;
             }
             try {
-                output.push(parser(input));
+                output.push(parser(input, state));
             } catch (_) {
                 break;
             }
@@ -72,15 +72,15 @@ export const star = <T>(parser: Parser<T>): Parser<T[]> => {
     };
 };
 
-export const plus = <T>(parser: Parser<T>): Parser<[T, ...T[]]> => {
-    return (input: Input): [T, ...T[]] => {
+export const plus = <T, S>(parser: Parser<T, S>): Parser<[T, ...T[]], S> => {
+    return (input, state): [T, ...T[]] => {
         const output: T[] = [];
         while (true) {
             if (input.length === 0) {
                 break;
             }
             try {
-                output.push(parser(input));
+                output.push(parser(input, state));
             } catch (_) {
                 break;
             }
@@ -92,40 +92,40 @@ export const plus = <T>(parser: Parser<T>): Parser<[T, ...T[]]> => {
     };
 };
 
-export const none = (input: Input): void => {
+export const none: Parser<void, any> = (input: Input): void => {
     if (input.length !== 0) {
         throw Error('expected empty input');
     }
 };
 
-export type AndType<Ps extends Parser<any>[]> = {
-    [K in keyof Ps]: Ps[K] extends Parser<infer T> ? T : never;
+export type AndType<Ps extends Parser<any, any>[]> = {
+    [K in keyof Ps]: Ps[K] extends Parser<infer T, any> ? T : never;
 };
 
-export function and<Ps extends Parser<any>[]>(...parsers: Ps): Parser<AndType<Ps>> {
-    return (input: Input): any => {
+export function and<Ps extends Parser<any, any>[], S>(...parsers: Ps): Parser<AndType<Ps>, S> {
+    return (input, state): any => {
         const output: any[] = [];
         for (const parser of parsers) {
-            output.push(parser(input));
+            output.push(parser(input, state));
         }
         return output as AndType<Ps>;
     };
 }
 
-export type OrType<Ps extends Parser<any>[]> = {
-    [K in keyof Ps]: Ps[K] extends Parser<infer T> ? T : never;
+export type OrType<Ps extends Parser<any, any>[]> = {
+    [K in keyof Ps]: Ps[K] extends Parser<infer T, any> ? T : never;
 }[number];
 
-export const or = <Ps extends Parser<any>[]>(...parsers: Ps): Parser<OrType<Ps>> => {
+export const or = <Ps extends Parser<any, any>[], S>(...parsers: Ps): Parser<OrType<Ps>, S> => {
     if (parsers.length === 0) {
         throw Error('at least one parser required');
     }
-    return (input: Input): OrType<Ps> => {
+    return (input, state): OrType<Ps> => {
         let error: unknown | undefined;
         for (const parser of parsers) {
             try {
                 const clone = input.slice();
-                const result = parser(clone);
+                const result = parser(clone, state);
                 input.splice(0, input.length, ...clone);
                 return result;
             } catch (e: unknown) {
@@ -136,23 +136,26 @@ export const or = <Ps extends Parser<any>[]>(...parsers: Ps): Parser<OrType<Ps>>
     };
 };
 
-export const maybe = <T>(parser: Parser<T>): Parser<T | undefined> => {
-    return (input: Input): T | undefined => {
+export const maybe = <T, S>(parser: Parser<T, S>): Parser<T | undefined, S> => {
+    return (input, state): T | undefined => {
         if (input.length === 0) {
             return;
         }
         try {
-            return parser(input);
+            return parser(input, state);
         } catch (_) {
             return;
         }
     };
 };
 
-export const lazy = <T>(thunk: () => Parser<T>): Parser<T> => {
-    return (input: Input): T => thunk()(input);
+export const lazy = <T, S>(thunk: () => Parser<T, S>): Parser<T, S> => {
+    return (input, state): T => thunk()(input, state);
 };
 
-export const transform = <I, O>(parser: Parser<I>, transform: (input: I) => O): Parser<O> => {
-    return (input: Input): O => transform(parser(input));
+export const transform = <I, O, S>(
+    parser: Parser<I, S>,
+    transform: (input: I, state: S) => O,
+): Parser<O, S> => {
+    return (input, state): O => transform(parser(input, state), state);
 };

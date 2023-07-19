@@ -37,6 +37,7 @@
     type-apply = (type type+)
 */
 
+import type { ASTBuilder } from './ast-builder.js';
 import type { Parser } from './parse.js';
 import { and, atom, lazy, list, or, plus, star, transform } from './parse.js';
 
@@ -53,11 +54,9 @@ export type AST =
     | AST.TypeImpl;
 
 export namespace AST {
-    export function create<const T extends AST>(value: T): T {
-        return value;
-    }
+    export type Entity = ValueEntity | TypeEntity;
 
-    export type Entity = Let | Param;
+    export type ValueEntity = Let | Param;
 
     export interface Let {
         t: 'let';
@@ -110,6 +109,24 @@ export namespace AST {
         expr: Expr;
         type: Type;
     }
+
+    // TODO
+    export interface Impl {
+        t: 'impl';
+        params: TypeParam[];
+        target: Var;
+        methods: Method[];
+    }
+
+    // TODO
+    export interface Method {
+        t: 'method';
+        id: number;
+        name: string;
+        impl: Fun;
+    }
+
+    export type TypeEntity = TypeDef | TypeParam;
 
     export interface TypeDef {
         t: 'type-def';
@@ -175,14 +192,14 @@ export namespace AST {
     export interface TypeImpl {
         t: 'type-impl';
         parent?: AST;
-        name: string;
+        trait: TypeVar;
         args: Type[];
     }
 
     export interface TypeFun {
         t: 'type-fun';
         parent?: AST;
-        params: [Type, ...Type[]];
+        params: [Type, Type, ...Type[]];
     }
 
     export interface TypeApply {
@@ -190,6 +207,30 @@ export namespace AST {
         parent?: AST;
         head: Type;
         args: [Type, ...Type[]];
+    }
+
+    // TODO
+    export interface Trait {
+        t: 'trait';
+        parent?: AST;
+        id: number;
+        name: string;
+        super: TypeVar;
+        params: TypeParam[];
+        assoc: TypeParam[];
+        methods: TypeMethod[];
+    }
+
+    // TODO
+    export interface TypeMethod {
+        t: 'type-method';
+        id: number;
+        name: string;
+        type: TypeFun;
+    }
+
+    export function is<const T extends AST['t']>(ast: AST, t: T[]): ast is Extract<AST, { t: T }> {
+        return t.includes(ast.t as T);
     }
 
     export function stringify(ast: AST): string {
@@ -240,8 +281,8 @@ export namespace AST {
                 return `${ast.name}: ${ast.impl.map(stringify).join(' + ')}`;
 
             case 'type-impl':
-                if (ast.args.length === 0) return ast.name;
-                else return `${ast.name}<${ast.args.map(stringify).join(', ')}>`;
+                if (ast.args.length === 0) return ast.trait.name;
+                else return `${ast.trait.name}<${ast.args.map(stringify).join(', ')}>`;
 
             case 'type-fun':
                 return `(fun ${ast.params.map(stringify).join(' ')})`;
@@ -261,11 +302,13 @@ const Identifier = transform(atom(/^[a-zA-Z_][a-zA-Z_0-9]*$/), name => {
     return name;
 });
 
-const Expr: Parser<AST.Expr> = lazy(() => or(Var, Block, Fun, Apply, Assert));
+type ASTParser<T> = Parser<T, ASTBuilder>;
 
-const Let: Parser<AST.Let> = lazy(() =>
-    transform(list(and(atom('let'), Identifier, Expr)), input =>
-        AST.create({
+const Expr: ASTParser<AST.Expr> = lazy(() => or(Var, Block, Fun, Apply, Assert));
+
+const Let: ASTParser<AST.Let> = lazy(() =>
+    transform(list(and(atom('let'), Identifier, Expr)), (input, state) =>
+        state.create({
             t: 'let',
             id: 0,
             name: input[1],
@@ -274,27 +317,27 @@ const Let: Parser<AST.Let> = lazy(() =>
     ),
 );
 
-const Var: Parser<AST.Var> = transform(Identifier, name =>
-    AST.create({
+const Var: ASTParser<AST.Var> = transform(Identifier, (name, state) =>
+    state.create({
         t: 'var',
         name,
     }),
 );
 
-const Block: Parser<AST.Block> = lazy(() =>
-    transform(list(and(atom('block'), plus(Stmt))), input =>
-        AST.create({
+const Block: ASTParser<AST.Block> = lazy(() =>
+    transform(list(and(atom('block'), plus(Stmt))), (input, state) =>
+        state.create({
             t: 'block',
             children: input[1],
         }),
     ),
 );
 
-const Stmt: Parser<AST.Statement> = or(Let, Expr);
+const Stmt: ASTParser<AST.Statement> = or(Let, Expr);
 
-const Fun: Parser<AST.Fun> = lazy(() =>
-    transform(list(and(atom('fun'), Params, Expr)), input =>
-        AST.create({
+const Fun: ASTParser<AST.Fun> = lazy(() =>
+    transform(list(and(atom('fun'), Params, Expr)), (input, state) =>
+        state.create({
             t: 'fun',
             params: input[1],
             body: input[2],
@@ -302,21 +345,21 @@ const Fun: Parser<AST.Fun> = lazy(() =>
     ),
 );
 
-const Params: Parser<AST.Param[]> = transform(list(star(Identifier)), input =>
-    input.map(name => AST.create({ t: 'param', id: 0, name })),
+const Params: ASTParser<AST.Param[]> = transform(list(star(Identifier)), (input, state) =>
+    input.map(name => state.create({ t: 'param', id: 0, name })),
 );
 
-const Apply: Parser<AST.Apply> = transform(list(and(Expr, star(Expr))), input =>
-    AST.create({
+const Apply: ASTParser<AST.Apply> = transform(list(and(Expr, star(Expr))), (input, state) =>
+    state.create({
         t: 'apply',
         head: input[0],
         args: input[1],
     }),
 );
 
-const Assert: Parser<AST.Assert> = lazy(() =>
-    transform(list(and(atom('::'), Expr, Type)), input =>
-        AST.create({
+const Assert: ASTParser<AST.Assert> = lazy(() =>
+    transform(list(and(atom('::'), Expr, Type)), (input, state) =>
+        state.create({
             t: 'assert',
             expr: input[1],
             type: input[2] as any,
@@ -324,9 +367,9 @@ const Assert: Parser<AST.Assert> = lazy(() =>
     ),
 );
 
-const TypeDef: Parser<AST.TypeDef> = lazy(() =>
-    transform(list(and(atom('type'), Identifier, Type)), input =>
-        AST.create({
+const TypeDef: ASTParser<AST.TypeDef> = lazy(() =>
+    transform(list(and(atom('type'), Identifier, Type)), (input, state) =>
+        state.create({
             t: 'type-def',
             id: 0,
             name: input[1],
@@ -337,11 +380,13 @@ const TypeDef: Parser<AST.TypeDef> = lazy(() =>
 
 const Type = lazy(() => or(TypeVar, Forall, Exists, TypeFun, TypeApply));
 
-const TypeVar: Parser<AST.TypeVar> = transform(Identifier, name => AST.create({ t: 'type-var', name }));
+const TypeVar: ASTParser<AST.TypeVar> = transform(Identifier, (name, state) =>
+    state.create({ t: 'type-var', name }),
+);
 
-const Forall: Parser<AST.Forall> = lazy(() =>
-    transform(list(and(atom('forall'), TypeParams, Type)), input =>
-        AST.create({
+const Forall: ASTParser<AST.Forall> = lazy(() =>
+    transform(list(and(atom('forall'), TypeParams, Type)), (input, state) =>
+        state.create({
             t: 'forall',
             params: input[1],
             body: input[2],
@@ -349,9 +394,9 @@ const Forall: Parser<AST.Forall> = lazy(() =>
     ),
 );
 
-const Exists: Parser<AST.Exists> = lazy(() =>
-    transform(list(and(atom('exists'), TypeParams, Type)), input =>
-        AST.create({
+const Exists: ASTParser<AST.Exists> = lazy(() =>
+    transform(list(and(atom('exists'), TypeParams, Type)), (input, state) =>
+        state.create({
             t: 'exists',
             params: input[1],
             body: input[2],
@@ -359,22 +404,22 @@ const Exists: Parser<AST.Exists> = lazy(() =>
     ),
 );
 
-const TypeParams: Parser<[AST.TypeParam, ...AST.TypeParam[]]> = lazy(() => list(plus(TypeParam)));
-const TypeParam: Parser<AST.TypeParam> = lazy(() => or(TypeParamHKT, TypeParamImpl));
+const TypeParams: ASTParser<[AST.TypeParam, ...AST.TypeParam[]]> = lazy(() => list(plus(TypeParam)));
+const TypeParam: ASTParser<AST.TypeParam> = lazy(() => or(TypeParamHKT, TypeParamImpl));
 
-const TypeParamHKT: Parser<AST.TypeParamHKT> = lazy(() => or(TypeParamConcrete, TypeParamHigherKinded));
+const TypeParamHKT: ASTParser<AST.TypeParamHKT> = lazy(() => or(TypeParamConcrete, TypeParamHigherKinded));
 
-const TypeParamConcrete: Parser<AST.TypeParamHKT> = transform(Identifier, name =>
-    AST.create({
+const TypeParamConcrete: ASTParser<AST.TypeParamHKT> = transform(Identifier, (name, state) =>
+    state.create({
         t: 'type-param-hkt',
         id: 0,
         name,
     }),
 );
 
-const TypeParamHigherKinded: Parser<AST.TypeParamHKT> = lazy(() =>
-    transform(list(and(Identifier, HigherKind)), input =>
-        AST.create({
+const TypeParamHigherKinded: ASTParser<AST.TypeParamHKT> = lazy(() =>
+    transform(list(and(Identifier, HigherKind)), (input, state) =>
+        state.create({
             t: 'type-param-hkt',
             id: 0,
             name: input[0],
@@ -383,24 +428,24 @@ const TypeParamHigherKinded: Parser<AST.TypeParamHKT> = lazy(() =>
     ),
 );
 
-const HKT: Parser<AST.HKT> = lazy(() => or(ConcreteKind, HigherKind));
+const HKT: ASTParser<AST.HKT> = lazy(() => or(ConcreteKind, HigherKind));
 
-const ConcreteKind: Parser<AST.ConcreteKind> = transform(atom('*'), () =>
-    AST.create({
+const ConcreteKind: ASTParser<AST.ConcreteKind> = transform(atom('*'), (_, state) =>
+    state.create({
         t: 'concrete-kind',
     }),
 );
 
-const HigherKind: Parser<AST.HigherKind> = transform(list(and(HKT, plus(HKT))), ([head, tail]) =>
-    AST.create({
+const HigherKind: ASTParser<AST.HigherKind> = transform(list(and(HKT, plus(HKT))), ([head, tail], state) =>
+    state.create({
         t: 'higher-kind',
         params: [head, ...tail] as [AST.HKT, AST.HKT, ...AST.HKT[]],
     }),
 );
 
-const TypeParamImpl: Parser<AST.TypeParamImpl> = lazy(() =>
-    transform(list(and(Identifier, plus(TypeImpl))), input =>
-        AST.create({
+const TypeParamImpl: ASTParser<AST.TypeParamImpl> = lazy(() =>
+    transform(list(and(Identifier, plus(TypeImpl))), (input, state) =>
+        state.create({
             t: 'type-param-impl',
             id: 0,
             name: input[0],
@@ -409,36 +454,40 @@ const TypeParamImpl: Parser<AST.TypeParamImpl> = lazy(() =>
     ),
 );
 
-const TypeImpl: Parser<AST.TypeImpl> = lazy(() => or(TypeImplUnary, TypeImplNary));
+const TypeImpl: ASTParser<AST.TypeImpl> = lazy(() => or(TypeImplUnary, TypeImplNary));
 
-const TypeImplUnary: Parser<AST.TypeImpl> = transform(Identifier, name =>
-    AST.create({
+const TypeImplUnary: ASTParser<AST.TypeImpl> = transform(Identifier, (name, state) =>
+    state.create({
         t: 'type-impl',
         name,
         args: [] as AST.Type[],
     }),
 );
 
-const TypeImplNary: Parser<AST.TypeImpl> = transform(list(and(Identifier, plus(Type))), input =>
-    AST.create({
-        t: 'type-impl',
+const TypeImplNary: ASTParser<AST.TypeImpl> = transform(list(and(Identifier, plus(Type))), (input, state) => {
+    const trait = state.create({
+        t: 'type-var',
         name: input[0],
+    });
+    return state.create({
+        t: 'type-impl',
+        trait,
         args: input[1],
-    }),
-);
+    });
+});
 
-const TypeFun: Parser<AST.TypeFun> = lazy(() =>
-    transform(list(and(atom('fun'), plus(Type))), input =>
-        AST.create({
+const TypeFun: ASTParser<AST.TypeFun> = lazy(() =>
+    transform(list(and(atom('fun'), Type, plus(Type))), (input, state) =>
+        state.create({
             t: 'type-fun',
-            params: input[1],
+            params: [input[1], ...input[2]] as [AST.Type, AST.Type, ...AST.Type[]],
         }),
     ),
 );
 
-const TypeApply: Parser<AST.TypeApply> = lazy(() =>
-    transform(list(and(Type, plus(Type))), input =>
-        AST.create({
+const TypeApply: ASTParser<AST.TypeApply> = lazy(() =>
+    transform(list(and(Type, plus(Type))), (input, state) =>
+        state.create({
             t: 'type-apply',
             head: input[0],
             args: input[1],
