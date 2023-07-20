@@ -255,7 +255,7 @@ export namespace AST {
         type: TypeFun;
     }
 
-    export function is<const T extends AST['t']>(ast: AST, t: T[]): ast is Extract<AST, { t: T }> {
+    export function is<X extends AST, const T extends X['t']>(ast: X, t: T[]): ast is Extract<X, { t: T }> {
         return t.includes(ast.t as T);
     }
 
