@@ -344,16 +344,28 @@ export namespace TypeLang {
                 // If a type is wrapped in a forall its either a generic
                 // function or an existential type. Existentials unify with
                 // nothing except exactly themselves
-
-                const lext = typeof lresult !== 'number' && lresult.op !== TypeOp.Fun;
-                const rext = typeof rresult !== 'number' && rresult.op !== TypeOp.Fun;
-
-                if (lext || rext) {
-                    // The equality is the "exactly" part. If the same
+                if (!isFun(lresult) || !isFun(rresult)) {
+                    // This equality is the "exactly" part. If the same
                     // existential AST node is passed in it should unify with
                     // itself
                     return lresult === rresult;
                 }
+
+                /*
+                    Function type unity
+
+                        <T, U>(t: T) -> U ~= <X, Y>(x: X) -> Y
+
+                        X ~= T
+                        U ~= Y
+
+                    The way to think about function type unity is that the
+                    arguments types of the left-hand side will be assinged to
+                    the arguments of the right-hand side, and the return type of
+                    the right-hand side is assigned to the return type of the
+                    left-hand side. The asymmetry is what gives rise to
+                    contravariance.
+                */
 
                 throw Error('todo');
             }
