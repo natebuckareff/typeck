@@ -2,6 +2,7 @@ import type { Sexpr } from './sexpr';
 
 export type Input = Sexpr[];
 export type Parser<T, S> = (input: Input, state: S) => T;
+export type ParserInputType<P> = P extends Parser<infer T, any> ? T : never;
 
 export const atom = (arg: string | RegExp | ((x: string) => boolean)): Parser<string, any> => {
     if (typeof arg === 'string') {
@@ -156,9 +157,9 @@ export const lazy = <T, S>(thunk: () => Parser<T, S>): Parser<T, S> => {
     return (input, state): T => thunk()(input, state);
 };
 
-export const transform = <I, O, S>(
-    parser: Parser<I, S>,
-    transform: (input: I, state: S) => O,
+export const transform = <P extends Parser<any, any>, O, S>(
+    parser: P,
+    transform: (input: ParserInputType<P>, state: S) => O,
 ): Parser<O, S> => {
     return (input, state): O => transform(parser(input, state), state);
 };

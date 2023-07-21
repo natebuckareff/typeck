@@ -1,6 +1,7 @@
 import { AST } from './ast.js';
 import { Repository } from './repository.js';
-import { TypeCode, TypeOp, type TypeCodeString, type TypeInstr } from './typecode.js';
+import { TypeCode, TypeOp, type TypeInstr } from './type-code.js';
+import { TypeLang } from './type-lang.js';
 
 /*
     How to calculate de bruijn indices for type variables?
@@ -28,7 +29,7 @@ export class Context {
     private _vars: Map<AST, number>; // Resolve variables to referenced IDs
     private _children: Map<AST, Context>; // Contexts created for any child nodes
     // private _checkCache: Map<AST, unknown>;
-    private _normalizeCache: Map<AST.Type, TypeCodeString>;
+    private _normalizeCache: Map<AST.Type, TypeCode>;
 
     private constructor(repo: Repository, root?: AST.Scope, parent?: Context, depth: number = 0) {
         this._repo = repo;
@@ -62,6 +63,11 @@ export class Context {
     define(ast: AST.Entity): void {
         const { name, id } = ast;
 
+        // Already defined
+        if (this._entities.get(id) === ast) {
+            return;
+        }
+
         switch (ast.t) {
             case 'let':
             case 'param':
@@ -73,7 +79,8 @@ export class Context {
                 this._children.set(ast, this);
                 break;
 
-            case 'type-def':
+            case 'type-alias':
+            case 'type-data':
             case 'type-param-hkt':
             case 'type-param-impl':
                 if (this._typeNames.has(name)) {
@@ -100,13 +107,15 @@ export class Context {
 
             case 'fun':
                 ctx = new Context(this._repo, ast, this);
+                for (const param of ast.generic) {
+                    ctx.define(param);
+                }
                 for (const param of ast.params) {
                     ctx.define(param);
                 }
                 break;
 
             case 'forall':
-            case 'exists':
                 ctx = new Context(this._repo, ast, this, this._depth + 1);
                 for (const param of ast.params) {
                     ctx.define(param);
@@ -158,6 +167,8 @@ export class Context {
         return;
     }
 
+    resolveVar(ast: AST.Var): ResolveResult<AST.ValueEntity> | undefined;
+    resolveVar(ast: AST.TypeVar): ResolveResult<AST.TypeEntity> | undefined;
     resolveVar(ast: AST.Var | AST.TypeVar): ResolveResult<AST.Entity> | undefined {
         let id = this._vars.get(ast);
         if (id !== undefined) {
@@ -193,46 +204,85 @@ export class Context {
 
     check(ast: AST): void {
         switch (ast.t) {
-            case 'let': {
+            // Define the `let` in the current scope if it wasn't already
+            // defined and then check its rhs. The rhs is checked in the scope
+            // of the current context
+            case 'let':
+                this.define(ast);
                 this.check(ast.child);
                 return;
-            }
 
+            // Literals trivally type check
+            case 'literal-integer':
+                return;
+
+            // Check that the variable name is declared
             case 'var': {
                 const result = this.resolveVar(ast);
                 if (result === undefined) {
-                    throw Error(`\`${ast.name}\` not defined`);
+                    throw Error(`identifier \`${ast.name}\` not declared`);
                 }
                 return;
             }
 
+            // Enter new lexical scope formed by the block and type check each
+            // block statement
             case 'block': {
                 const ctx = this.enter(ast);
                 for (const child of ast.children) {
-                    child.parent ??= ast;
                     ctx.check(child);
                 }
                 return;
             }
 
+            // Enter new lexical scope formed by the function. Type check each
+            // generic type parameter, each function parameter, the return type,
+            // and the function body
             case 'fun': {
                 const ctx = this.enter(ast);
+                for (const param of ast.generic) {
+                    ctx.check(param);
+                }
+                for (const param of ast.params) {
+                    ctx.check(param);
+                }
+                ctx.check(ast.ret);
                 ctx.check(ast.body);
                 return;
             }
 
+            // Type check the function parameter's type annotation
             case 'param':
+                this.check(ast.type);
                 return;
 
             case 'apply': {
+                // Type check the expression being applied
                 this.check(ast.head);
-                const headType = this.infer(ast.head);
-                for (const arg of ast.args) {
-                    this.check(arg);
-                    const argType = this.infer(arg);
-                    // TODO: unify?
-                }
-                return;
+
+                // Infer the type of the applied expression
+                const headInferrence = this.infer(ast.head);
+
+                if (TypeLang.is(headInferrence.type, TypeOp.Foral)) headInferrence.type;
+
+                throw Error('todo');
+
+                // if (headTypeOp === TypeOp.Fun) {
+                //     /*
+                //         unify(paramType, argType)
+                //     */
+
+                //     throw Error('todo: concrete function application');
+                // } else {
+                //     throw Error('todo: generic function application');
+                // }
+
+                // for (const arg of ast.args) {
+                //     this.check(arg);
+                //     const argType = this.infer(arg);
+                //     // TODO: unify?
+                // }
+                // return;
             }
 
             case 'assert': {
@@ -246,11 +296,53 @@ export class Context {
         }
     }
 
-    infer(ast: AST.Expr): unknown {
-        return {};
+    // private _checkConcreteApply(fun: AST.Fun);
+
+    infer(ast: AST.Expr | AST.Type): { type: TypeLang; params?: Map<number, TypeLang.Param> } {
+        switch (ast.t) {
+            case 'integer':
+                return { type: { op: TypeOp.Ref, id: 1024 } };
+
+            case 'var': {
+                const result = this.resolveValueName(ast.name);
+                if (result === undefined) {
+                    throw Error('identifier not declared');
+                }
+
+                if (result.ast.t === 'let') {
+                    return result.ctx.infer(result.ast.child);
+                } else {
+                    return result.ctx.infer(result.ast.type);
+                }
+            }
+
+            case 'block':
+                // Infer type of each `Return` statement and the terminal
+                // statement, and then unify all of those
+                throw Error('todo');
+
+            case 'fun': {
+                const params: TypeLang[] = [];
+
+                for (const { type } of ast.params) {
+                    params.push(this.infer(type).type);
+                }
+
+                params.push(this.infer(ast.ret).type);
+
+                ast.params;
+            }
+
+            case 'apply':
+            case 'assert':
+
+            //
+        }
+
+        throw Error('todo');
     }
 
-    normalize(ast: AST.Type): TypeCodeString {
+    normalize(ast: AST.Type): TypeCode {
         let code = this._normalizeCache.get(ast);
         if (code === undefined) {
             code = TypeCode.encode(this._normalize(ast));
@@ -261,49 +353,51 @@ export class Context {
 
     private *_normalize(ast: AST.Type | AST.HKT): Iterable<TypeInstr> {
         switch (ast.t) {
-            case 'forall':
-            case 'exists': {
-                const ctx = this.enter(ast);
-                yield ast.t === 'forall' ? TypeOp.Forall : TypeOp.Exists;
-                for (const param of ast.params) {
-                    if (param.t === 'type-param-hkt') {
-                        if (param.hkt !== undefined) {
-                            yield* ctx._normalize(param.hkt);
-                        }
-                    } else {
-                        yield* ctx._normalizeTypeParamImpl(param);
-                    }
-                }
-                return;
-            }
+            // case 'forall': {
+            //     const ctx = this.enter(ast);
+            //     yield ast.t === 'forall' ? TypeOp.Forall : TypeOp.Exists;
+            //     for (const param of ast.params) {
+            //         if (param.t === 'type-param-hkt') {
+            //             if (param.hkt !== undefined) {
+            //                 yield* ctx._normalize(param.hkt);
+            //             }
+            //         } else {
+            //             yield* ctx._normalizeTypeParamImpl(param);
+            //         }
+            //     }
+            //     return;
+            // }
 
             case 'type-var': {
-                const result = this.resolveVar(ast);
+                throw Error('todo');
+                // const result = this.resolveVar(ast);
 
-                if (result === undefined) {
-                    throw Error('variable not bound');
-                }
+                // if (result === undefined) {
+                //     throw Error('variable not bound');
+                // }
 
-                if (!AST.is(result.ast, ['type-def', 'type-param-hkt', 'type-param-impl'])) {
-                    throw Error('expected type binding, got value');
-                }
+                // // prettier-ignore
+                // if (!AST.is(result.ast, ['type-alias', 'type-data', 'type-param-hkt', 'type-param-impl'])) {
+                //     throw Error('expected type binding, got value');
+                // }
 
-                if (result.ast.t === 'type-def') {
-                    yield TypeOp.Ref;
-                    yield result.ast.id;
-                } else {
-                    yield TypeOp.Var;
-                    yield this._depth - result.ctx._depth;
-                }
-                return;
+                // // TODO
+                // if (result.ast.t === 'type-data') {
+                //     yield TypeOp.Ref;
+                //     yield result.ast.id;
+                // } else {
+                //     yield TypeOp.Var;
+                //     yield this._depth - result.ctx._depth;
+                // }
+                // return;
             }
 
             case 'concrete-kind':
-                yield TypeOp.Kind;
+                yield TypeOp.Concrete;
                 return;
 
             case 'higher-kind':
-                yield* this._normalizeFun(TypeOp.KindFun, ast.params);
+                yield* this._normalizeFun(TypeOp.Hkt, ast.params);
                 return;
 
             case 'type-fun':

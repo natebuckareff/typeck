@@ -45,7 +45,8 @@ export type AST =
     | AST.Let
     | AST.Expr
     | AST.Param
-    | AST.TypeDef
+    | AST.Datatype
+    | AST.TypeAlias
     | AST.Type
     | AST.TypeParam
     | AST.TypeParamHKT
@@ -54,7 +55,7 @@ export type AST =
     | AST.TypeImpl;
 
 export namespace AST {
-    export type Language = Let | Expr | TypeDef;
+    export type Language = Let | Expr | Datatype | TypeAlias;
 
     export type Entity = ValueEntity | TypeEntity;
     export type Scope = ValueScope | TypeScope;
@@ -67,7 +68,7 @@ export namespace AST {
         id: number;
         name: string;
         parent?: AST;
-        child: Expr | Type;
+        child: Expr;
     }
 
     export type Expr = Literal | Var | Block | Fun | Apply | Assert;
@@ -75,7 +76,7 @@ export namespace AST {
     export type Literal = Integer;
 
     export interface Integer {
-        t: 'integer';
+        t: 'literal-integer';
         parent?: AST;
         value: number;
     }
@@ -97,15 +98,18 @@ export namespace AST {
     export interface Fun {
         t: 'fun';
         parent?: AST;
+        generic: TypeParam[];
         params: Param[];
+        ret: AST.Type;
         body: Expr;
     }
 
     export interface Param {
         t: 'param';
+        parent?: AST;
         id: number;
         name: string;
-        parent?: AST;
+        type: AST.Type;
     }
 
     export interface Apply {
@@ -145,18 +149,26 @@ export namespace AST {
         impl: Fun;
     }
 
-    export type TypeEntity = TypeDef | TypeParam;
-    export type TypeScope = Forall | Exists;
+    export type TypeEntity = Datatype | TypeAlias | TypeParam;
+    export type TypeScope = Forall;
 
-    export interface TypeDef {
-        t: 'type-def';
+    export interface Datatype {
+        t: 'type-data';
+        parent?: AST;
+        id: number;
+        name: string;
+        type: Type; // XXX
+    }
+
+    export interface TypeAlias {
+        t: 'type-alias';
         parent?: AST;
         id: number;
         name: string;
         type: Type;
     }
 
-    export type Type = TypeVar | Forall | Exists | TypeFun | TypeApply | Infer;
+    export type Type = TypeVar | Forall | TypeFun | TypeApply | Infer;
 
     export interface TypeVar {
         t: 'type-var';
@@ -166,13 +178,6 @@ export namespace AST {
 
     export interface Forall {
         t: 'forall';
-        parent?: AST;
-        params: [TypeParam, ...TypeParam[]];
-        body: Type;
-    }
-
-    export interface Exists {
-        t: 'exists';
         parent?: AST;
         params: [TypeParam, ...TypeParam[]];
         body: Type;
@@ -225,10 +230,11 @@ export namespace AST {
     export interface TypeApply {
         t: 'type-apply';
         parent?: AST;
-        head: Type;
+        head: TypeVar;
         args: [Type, ...Type[]];
     }
 
+    // TODO
     export interface Infer {
         t: 'infer';
         parent?: AST;
@@ -255,7 +261,10 @@ export namespace AST {
         type: TypeFun;
     }
 
-    export function is<X extends AST, const T extends X['t']>(ast: X, t: T[]): ast is Extract<X, { t: T }> {
+    export function is<X extends AST, const T extends X['t']>(
+        ast: X,
+        t: T[],
+    ): ast is Extract<X, { t: T }> {
         return t.includes(ast.t as T);
     }
 
@@ -291,14 +300,14 @@ export namespace AST {
             case 'infer':
                 return `infer ${stringify(ast.target)}`;
 
-            case 'type-def':
-                return `type ${ast.name} = ${stringify(ast.type)}`;
+            case 'type-data':
+            case 'type-alias': {
+                const h = ast.t === 'type-alias' ? 'type' : 'data';
+                return `${h} ${ast.name} = ${stringify(ast.type)}`;
+            }
 
             case 'forall':
-            case 'exists': {
-                const h = ast.t === 'forall' ? '∀' : '∃';
-                return `(${h} ${ast.params.map(stringify).join(', ')}. ${stringify(ast.body)})`;
-            }
+                return `(∀ ${ast.params.map(stringify).join(', ')}. ${stringify(ast.body)})`;
 
             case 'type-param-hkt':
                 if (ast.hkt === undefined) return ast.name;
@@ -377,18 +386,43 @@ const Block: ASTParser<AST.Block> = lazy(() =>
 
 const Stmt: ASTParser<AST.Statement> = or(Let, Expr);
 
-const Fun: ASTParser<AST.Fun> = lazy(() =>
-    transform(list(and(atom('fun'), Params, Expr)), (input, state) =>
+const FunParser = lazy(() => list(and(atom('fun'), list(star(Param)), Type, Expr)));
+
+const ConcreteFun: ASTParser<AST.Fun> = lazy(() =>
+    transform(FunParser, (input, state) =>
         state.create({
             t: 'fun',
+            generic: [] as AST.TypeParam[],
             params: input[1],
-            body: input[2],
+            ret: input[2],
+            body: input[3],
         }),
     ),
 );
 
-const Params: ASTParser<AST.Param[]> = transform(list(star(Identifier)), (input, state) =>
-    input.map(name => state.create({ t: 'param', id: 0, name })),
+const GenericFun: ASTParser<AST.Fun> = lazy(() =>
+    transform(list(and(atom('forall'), TypeParams, FunParser)), (input, state) =>
+        state.create({
+            t: 'fun',
+            generic: input[1],
+            params: input[2][1],
+            ret: input[2][2],
+            body: input[2][3],
+        }),
+    ),
+);
+
+const Fun: ASTParser<AST.Fun> = or(ConcreteFun, GenericFun);
+
+const Param: ASTParser<AST.Param> = lazy(() =>
+    transform(list(and(Identifier, Type)), (input, state) =>
+        state.create({
+            t: 'param',
+            id: 0,
+            name: input[0],
+            type: input[1],
+        }),
+    ),
 );
 
 const Apply: ASTParser<AST.Apply> = transform(list(and(Expr, star(Expr))), (input, state) =>
@@ -430,10 +464,10 @@ const Infer: ASTParser<AST.Infer> = lazy(() =>
     ),
 );
 
-const TypeDef: ASTParser<AST.TypeDef> = lazy(() =>
-    transform(list(and(atom('type'), Identifier, Type)), (input, state) =>
+const Datatype: ASTParser<AST.Datatype> = lazy(() =>
+    transform(list(and(atom('data'), Identifier, Type)), (input, state) =>
         state.create({
-            t: 'type-def',
+            t: 'type-data',
             id: 0,
             name: input[1],
             type: input[2],
@@ -441,7 +475,18 @@ const TypeDef: ASTParser<AST.TypeDef> = lazy(() =>
     ),
 );
 
-const Type = lazy(() => or(TypeVar, Forall, Exists, TypeFun, TypeApply, Infer));
+const TypeAlias: ASTParser<AST.TypeAlias> = lazy(() =>
+    transform(list(and(atom('type'), Identifier, Type)), (input, state) =>
+        state.create({
+            t: 'type-alias',
+            id: 0,
+            name: input[1],
+            type: input[2],
+        }),
+    ),
+);
+
+const Type = lazy(() => or(TypeVar, Forall, TypeFun, TypeApply, Infer));
 
 const TypeVar: ASTParser<AST.TypeVar> = transform(Identifier, (name, state) =>
     state.create({ t: 'type-var', name }),
@@ -457,20 +502,14 @@ const Forall: ASTParser<AST.Forall> = lazy(() =>
     ),
 );
 
-const Exists: ASTParser<AST.Exists> = lazy(() =>
-    transform(list(and(atom('exists'), TypeParams, Type)), (input, state) =>
-        state.create({
-            t: 'exists',
-            params: input[1],
-            body: input[2],
-        }),
-    ),
+const TypeParams: ASTParser<[AST.TypeParam, ...AST.TypeParam[]]> = lazy(() =>
+    list(plus(TypeParam)),
 );
-
-const TypeParams: ASTParser<[AST.TypeParam, ...AST.TypeParam[]]> = lazy(() => list(plus(TypeParam)));
 const TypeParam: ASTParser<AST.TypeParam> = lazy(() => or(TypeParamHKT, TypeParamImpl));
 
-const TypeParamHKT: ASTParser<AST.TypeParamHKT> = lazy(() => or(TypeParamConcrete, TypeParamHigherKinded));
+const TypeParamHKT: ASTParser<AST.TypeParamHKT> = lazy(() =>
+    or(TypeParamConcrete, TypeParamHigherKinded),
+);
 
 const TypeParamConcrete: ASTParser<AST.TypeParamHKT> = transform(Identifier, (name, state) =>
     state.create({
@@ -499,11 +538,13 @@ const ConcreteKind: ASTParser<AST.ConcreteKind> = transform(atom('*'), (_, state
     }),
 );
 
-const HigherKind: ASTParser<AST.HigherKind> = transform(list(and(HKT, plus(HKT))), ([head, tail], state) =>
-    state.create({
-        t: 'higher-kind',
-        params: [head, ...tail] as [AST.HKT, AST.HKT, ...AST.HKT[]],
-    }),
+const HigherKind: ASTParser<AST.HigherKind> = transform(
+    list(and(HKT, plus(HKT))),
+    ([head, tail], state) =>
+        state.create({
+            t: 'higher-kind',
+            params: [head, ...tail] as [AST.HKT, AST.HKT, ...AST.HKT[]],
+        }),
 );
 
 const TypeParamImpl: ASTParser<AST.TypeParamImpl> = lazy(() =>
@@ -522,22 +563,28 @@ const TypeImpl: ASTParser<AST.TypeImpl> = lazy(() => or(TypeImplUnary, TypeImplN
 const TypeImplUnary: ASTParser<AST.TypeImpl> = transform(Identifier, (name, state) =>
     state.create({
         t: 'type-impl',
-        name,
+        trait: state.create({
+            t: 'type-var',
+            name,
+        }),
         args: [] as AST.Type[],
     }),
 );
 
-const TypeImplNary: ASTParser<AST.TypeImpl> = transform(list(and(Identifier, plus(Type))), (input, state) => {
-    const trait = state.create({
-        t: 'type-var',
-        name: input[0],
-    });
-    return state.create({
-        t: 'type-impl',
-        trait,
-        args: input[1],
-    });
-});
+const TypeImplNary: ASTParser<AST.TypeImpl> = transform(
+    list(and(Identifier, plus(Type))),
+    (input, state) => {
+        const trait = state.create({
+            t: 'type-var',
+            name: input[0],
+        });
+        return state.create({
+            t: 'type-impl',
+            trait,
+            args: input[1],
+        });
+    },
+);
 
 const TypeFun: ASTParser<AST.TypeFun> = lazy(() =>
     transform(list(and(atom('fun'), Type, plus(Type))), (input, state) =>
@@ -549,7 +596,7 @@ const TypeFun: ASTParser<AST.TypeFun> = lazy(() =>
 );
 
 const TypeApply: ASTParser<AST.TypeApply> = lazy(() =>
-    transform(list(and(Type, plus(Type))), (input, state) =>
+    transform(list(and(TypeVar, plus(Type))), (input, state) =>
         state.create({
             t: 'type-apply',
             head: input[0],
@@ -558,4 +605,4 @@ const TypeApply: ASTParser<AST.TypeApply> = lazy(() =>
     ),
 );
 
-export const Language: ASTParser<AST.Language> = or(Let, Expr, TypeDef);
+export const Language: ASTParser<AST.Language> = or(Let, Expr, Datatype, TypeAlias);

@@ -1,16 +1,16 @@
 /*
     expr :=
-        | quantified
+        | forall
         | hole
         | ref
         | var
         | fun
         | apply
 
-    quantified :=
-        | quantifier (KindFun hkt hkt) expr
-        | quantifier (Constr expr)+ expr
-        | quantifier expr
+    forall :=
+        | Forall (KindFun hkt hkt) expr
+        | Forall (Constr expr)+ expr
+        | Forall expr
         where
             quantifier := Forall | Exists
             hkt := Kind | Fun hkt hkt
@@ -21,26 +21,62 @@
     apply := Apply expr expr
 */
 
+import type { TypeLang } from './type-lang';
+
 // prettier-ignore
 export enum TypeOp {
-    Forall  = 0x00, // Generic function type
-    Exists  = 0x01, // Existential type
-    KindFun = 0x02, // Higher-kinded type
-    Kind    = 0x03, // Kind of concrete types
-    Constr  = 0x04, // Type parameter constraint
-    Hole    = 0x05, // Top-level reference
-    Ref     = 0x06, // Top-level reference
-    Var     = 0x07, // Bound variable (De Bruijn) index
-    Fun     = 0x08, // Function type
-    Apply   = 0x09, // Application
+    Forall   = 0x00, // Generic function type
+    Concrete = 0x01, // Kind of concrete types
+    Hkt      = 0x02, // Higher-kinded type
+    Impl     = 0x03, // Type parameter constraint
+    Hole     = 0x04, // Top-level reference
+    Ref      = 0x05, // Top-level reference
+    Var      = 0x06, // Bound variable (De Bruijn) index
+    Fun      = 0x07, // Function type
+    Apply    = 0x08, // Application
 }
 
 export type TypeInstr = TypeOp | number;
 
-export type TypeCodeString = string & { readonly TypeCodeString: unique symbol };
+export type TypeCode = string & { readonly TypeCodeString: unique symbol };
 
 export namespace TypeCode {
-    export function encode(input: Iterable<TypeInstr>): TypeCodeString {
+    export function* compile(ast: TypeLang): Iterable<TypeInstr> {
+        if (ast === TypeOp.Concrete) {
+            return ast;
+        }
+
+        yield ast.op;
+
+        switch (ast.op) {
+            case TypeOp.Forall: {
+                if (Array.isArray(ast.param)) {
+                    for (const impl of ast.param) {
+                        yield TypeOp.Impl;
+                        yield* compile(impl);
+                    }
+                } else {
+                    yield* compile(ast.param);
+                }
+                return;
+            }
+
+            case TypeOp.Hkt:
+            case TypeOp.Fun:
+            case TypeOp.Apply:
+                yield* compile(ast.expr[0]);
+                yield* compile(ast.expr[1]);
+                return;
+
+            case TypeOp.Hole:
+            case TypeOp.Ref:
+            case TypeOp.Var:
+                yield ast.id;
+                return;
+        }
+    }
+
+    export function encode(input: Iterable<TypeInstr>): TypeCode {
         let output: string = '';
         for (const instr of input) {
             if (instr > 0xffff) {
@@ -48,6 +84,6 @@ export namespace TypeCode {
             }
             output += String.fromCharCode(instr & 0xffff);
         }
-        return output as TypeCodeString;
+        return output as TypeCode;
     }
 }

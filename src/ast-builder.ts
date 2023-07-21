@@ -52,12 +52,15 @@ export class ASTBuilder {
                 ast.type.parent = ast;
                 break;
 
-            case 'type-def':
+            case 'type-alias':
+                ast.type.parent = ast;
+                break;
+
+            case 'type-data':
                 ast.type.parent = ast;
                 break;
 
             case 'forall':
-            case 'exists':
                 for (const param of ast.params) {
                     param.parent = ast;
                 }
@@ -84,7 +87,7 @@ export class ASTBuilder {
 
             case 'type-impl':
                 for (const arg of ast.args) {
-                    ast.parent = ast;
+                    arg.parent = ast;
                 }
                 break;
 
