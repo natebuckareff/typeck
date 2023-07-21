@@ -273,7 +273,7 @@ export namespace AST {
             case 'let':
                 return `let ${ast.name} = ${stringify(ast.child)}`;
 
-            case 'integer':
+            case 'literal-integer':
                 return ast.value + '';
 
             case 'var':
@@ -363,7 +363,7 @@ const Literal = lazy(() => Integer);
 
 const Integer: ASTParser<AST.Integer> = transform(atom(/^(-+)?[0-9]+$/), (input, state) =>
     state.create({
-        t: 'integer',
+        t: 'literal-integer',
         value: Number.parseInt(input),
     }),
 );

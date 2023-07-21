@@ -1,8 +1,8 @@
-import { ASTBuilder } from './ast-builder.js';
-import { AST } from './ast.js';
-import { Context } from './context.js';
-import { Repository } from './repository.js';
+import { TypeOp } from './type-code.js';
+import { TypeLang } from './type-lang.js';
+import { print } from './util.js';
 
+/*
 const repo = new Repository();
 const ctx = Context.empty(repo);
 const builder = new ASTBuilder();
@@ -36,12 +36,61 @@ interface Foo {
 interface Bar {
     readonly Bar: unique symbol;
 }
+*/
 
-// function foo<T extends Foo>(x: Foo) {
-//     let y: T = x
-//     //
-// }
+const ctx = new TypeLang.Context();
 
-let a: <T>(t: T) => T = {} as any;
-let b: (x: number) => number = {} as any;
-b = a; // error
+const Unit = 0;
+const List = 1;
+const Either = 2;
+
+ctx.defineDatatype(0, 'Unit', []);
+ctx.defineDatatype(1, 'List', [TypeOp.Concrete]);
+ctx.defineDatatype(2, 'Either', [TypeOp.Concrete, TypeOp.Concrete]);
+
+// <T, U>(t: T, u: U) -> U
+const foo: TypeLang = {
+    op: TypeOp.Forall,
+    param: TypeOp.Concrete, // <T>
+    expr: {
+        op: TypeOp.Forall,
+        param: TypeOp.Concrete, // <U>
+        expr: {
+            op: TypeOp.Fun,
+            expr: [
+                { op: TypeOp.Var, id: 1 }, // (t: T)
+                {
+                    op: TypeOp.Fun,
+                    expr: [
+                        { op: TypeOp.Var, id: 0 }, // (u: U)
+                        { op: TypeOp.Var, id: 0 }, // -> U
+                    ],
+                },
+            ],
+        },
+    },
+};
+
+// <X>(x: X, y: X) -> X
+const bar: TypeLang = {
+    op: TypeOp.Forall,
+    param: TypeOp.Concrete, // <X>
+    expr: {
+        op: TypeOp.Fun,
+        expr: [
+            { op: TypeOp.Var, id: 0 }, // (x: X)
+            {
+                op: TypeOp.Fun,
+                expr: [
+                    { op: TypeOp.Var, id: 0 }, // (y: X)
+                    { op: TypeOp.Var, id: 0 }, // -> X
+                ],
+            },
+        ],
+    },
+};
+
+print(`${TypeLang.stringify(foo)}   ~=   ${TypeLang.stringify(bar)}`);
+console.log('--->', ctx.check(foo, []));
+console.log('--->', ctx.check(bar, []));
+console.log('--->', ctx.unify(bar, foo, TypeLang.UnityState.empty()));

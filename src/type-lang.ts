@@ -1,10 +1,12 @@
 import assert from 'node:assert';
-import { TypeCode, TypeOp } from './type-code';
+import { TypeCode, TypeOp } from './type-code.js';
 
 export type TypeLang =
     | TypeLang.Forall
     | TypeLang.Kind
+    | TypeLang.Hole
     | TypeLang.Var
+    | TypeLang.Ref
     | TypeLang.Fun
     | TypeLang.Apply;
 
@@ -24,8 +26,18 @@ export namespace TypeLang {
         expr: [Kind, Kind];
     }
 
+    export interface Hole {
+        op: TypeOp.Hole;
+        id: number;
+    }
+
     export interface Var {
-        op: TypeOp.Hole | TypeOp.Var | TypeOp.Ref;
+        op: TypeOp.Var | TypeOp.Ref;
+        id: number;
+    }
+
+    export interface Ref {
+        op: TypeOp.Ref;
         id: number;
     }
 
@@ -39,17 +51,33 @@ export namespace TypeLang {
         expr: [TypeLang, TypeLang];
     }
 
-    export interface Span {
-        code: TypeCode;
-        offset: number;
+    export function isForall(x: TypeLang): x is Forall {
+        return typeof x !== 'number' && x.op === TypeOp.Forall;
     }
 
     export function isKind(x: TypeLang): x is Kind {
         return x === TypeOp.Concrete || x.op === TypeOp.Hkt;
     }
 
+    export function isHole(x: TypeLang): x is Hole {
+        return typeof x !== 'number' && x.op === TypeOp.Hole;
+    }
+
+    export function isVar(x: TypeLang): x is Var {
+        return typeof x !== 'number' && x.op === TypeOp.Var;
+    }
+
+    export function isRef(x: TypeLang): x is Ref {
+        return typeof x !== 'number' && x.op === TypeOp.Var;
+    }
+
     export function isFun(x: TypeLang): x is Fun {
         return typeof x !== 'number' && x.op === TypeOp.Fun;
+    }
+
+    export interface Span {
+        code: TypeCode;
+        offset: number;
     }
 
     export type Decoding<T> = [T, number];
@@ -173,30 +201,138 @@ export namespace TypeLang {
         params: Param[];
     }
 
+    export interface Trait {
+        name: string;
+        params: Param[];
+    }
+
+    export interface TraitImpl {
+        // TODO
+    }
+
+    // TODO: This and the `unify` method should be a separate `Unifier` class
+    export class UnityState {
+        constructor(
+            public params: { lhs: Param[]; rhs: Param[] },
+            public captured: { lhs: TypeLang[][]; rhs: TypeLang[][] },
+        ) {}
+
+        static empty(): UnityState {
+            return new UnityState({ lhs: [], rhs: [] }, { lhs: [], rhs: [] });
+        }
+
+        swap(): UnityState {
+            return new UnityState(
+                { lhs: this.params.rhs, rhs: this.params.lhs },
+                { lhs: this.captured.rhs, rhs: this.captured.lhs },
+            );
+        }
+    }
+
     export class Context {
         private _datatypes: Map<number, Datatype>;
+        private _traits: Map<number, Trait>;
         private _holes: Map<number, TypeLang>;
+        private _impls: Map<TypeCode, Map<TypeCode, TraitImpl>>;
 
         constructor() {
             this._datatypes = new Map();
+            this._traits = new Map();
             this._holes = new Map();
+            this._impls = new Map();
         }
 
-        define(id: number, name: string, params: Param[] = []): void {
+        defineDatatype(id: number, name: string, params: Param[] = []): void {
             this._datatypes.set(id, { name, params });
+        }
+
+        defineTrait(id: number, name: string, params: Param[] = []): void {
+            this._traits.set(id, { name, params });
+        }
+
+        defineImpl(type: TypeLang, trait: TypeLang, impl: TraitImpl): void {
+            const typeTc = TypeCode.encode(TypeCode.compile(type));
+            const traitTc = TypeCode.encode(TypeCode.compile(trait));
+
+            let traitImpls = this._impls.get(traitTc);
+            if (traitImpls === undefined) {
+                traitImpls = new Map();
+                this._impls.set(traitTc, traitImpls);
+            }
+            traitImpls.set(typeTc, impl);
+        }
+
+        // Check that the AST is a valid type
+        check(ast: TypeLang, params: Param[]): boolean {
+            if (ast === TypeOp.Concrete || ast.op === TypeOp.Hkt) {
+                return true;
+            }
+
+            switch (ast.op) {
+                case TypeOp.Forall: {
+                    const { param } = ast;
+                    if (Array.isArray(param)) {
+                        // Check contraints
+                        for (const constr of param) {
+                            if (!this.check(constr, params)) {
+                                return false;
+                            }
+                        }
+                    }
+                    return this.check(ast.expr, [param, ...params]);
+                }
+
+                case TypeOp.Hole:
+                    throw Error('todo');
+
+                case TypeOp.Ref:
+                    return this._datatypes.has(ast.id);
+
+                case TypeOp.Var:
+                    return ast.id < params.length;
+
+                case TypeOp.Fun: {
+                    const [x, y] = ast.expr;
+                    return this.check(x, params) && this.check(y, params);
+                }
+
+                case TypeOp.Apply:
+                    const [h, a] = ast.expr;
+
+                    if (!this.check(h, params) || !this.check(a, params)) {
+                        return false;
+                    }
+
+                    const headKind = this.kind(h, params);
+
+                    if (headKind === undefined || headKind === TypeOp.Concrete) {
+                        return false;
+                    }
+
+                    const argKind = this.kind(a, params);
+
+                    if (argKind === undefined) {
+                        return false;
+                    }
+
+                    const headTc = TypeCode.encode(TypeCode.compile(headKind));
+                    const argTc = TypeCode.encode(TypeCode.compile(argKind));
+
+                    return headTc !== argTc;
+            }
         }
 
         // Given an AST of nested forall nodes, extract the first non-forall
         // descendant and returning the parameters of the discarded foralls
-        unwrap(ast: TypeLang): [TypeLang, Param[]] {
-            if (typeof ast === 'number' || ast.op !== TypeOp.Forall) {
+        unwrap(ast: TypeLang): [Exclude<TypeLang, Forall>, Param[]] {
+            if (!isForall(ast)) {
                 throw Error('cannot unwrap unquantified expression');
             }
             const params: Param[] = [];
             do {
                 params.push(ast.param);
                 ast = ast.expr;
-            } while (typeof ast !== 'number' && ast.op === TypeOp.Forall);
+            } while (isForall(ast));
             return [ast, params];
         }
 
@@ -239,10 +375,11 @@ export namespace TypeLang {
                 }
 
                 // HKTs are like type-level functions, so the kind of a type
-                // application is the "return type" of the applied HKT. The kind
-                // of the HKT's parameter must equal the kind of the argument
-                // type
+                // application is the "return type" of the applied HKT
                 case TypeOp.Apply: {
+                    // NOTE: We check that the argument can actually be applied
+                    // in `check`
+
                     const head = this.kind(ast.expr[0], params);
 
                     if (head === undefined) {
@@ -254,32 +391,15 @@ export namespace TypeLang {
                         throw Error('invalid number of type parameters');
                     }
 
-                    const param = head.expr[0];
-                    const arg = this.kind(ast.expr[1], params);
-
-                    if (arg === undefined) {
-                        return;
-                    }
-
-                    // Ensure that the kind of the first parameter of the
-                    // applied HKT is equal to the kind of the applying type
-                    // argument
-                    const paramTc = TypeCode.encode(TypeCode.compile(param));
-                    const argTc = TypeCode.encode(TypeCode.compile(param));
-
-                    if (paramTc !== argTc) {
-                        throw Error('kinds not equal');
-                    }
-
                     return head.expr[1];
                 }
             }
         }
 
         // Convert a datatype's parameter list to the corresponding HKT
-        private _paramsToHkt(params: TypeLang.Param[]): Hkt {
-            if (params.length <= 0) {
-                throw Error('invalid datatype parameter list');
+        private _paramsToHkt(params: TypeLang.Param[]): Kind {
+            if (params.length === 0) {
+                return TypeOp.Concrete;
             }
             const first = this._paramToKind(params[0]!);
             let second: Kind;
@@ -297,24 +417,25 @@ export namespace TypeLang {
         }
 
         // Check if `lhs` and `rhs` represent the same type
-        unify(lhs: TypeLang, rhs: TypeLang, params: Param[], captured: TypeLang[][]): boolean {
+        unify(lhs: TypeLang, rhs: TypeLang, state: UnityState): boolean {
             // If the left-hand side is an unbound variable, attempt to
             // instantiate it with the right-hand side type
-            if (typeof lhs !== 'number' && lhs.op === TypeOp.Var && lhs.id < params.length) {
-                let instances = captured[lhs.id];
+            if (isVar(lhs) && lhs.id < state.params.lhs.length) {
+                let instances = state.captured.lhs[lhs.id];
 
                 // Initialize the instance set
                 if (instances === undefined) {
                     instances = [];
-                    captured[lhs.id] = instances;
+                    state.captured.lhs[lhs.id] = instances;
                 }
 
                 // Get the corresponding unbound parameter
-                const param = params[lhs.id]!;
+                const param = state.params.lhs[lhs.id]!;
 
                 // Attempt to instantiate the unbound, capturing paramter with
                 // the right-hand side type
-                if (!this.instantiate(param, rhs)) {
+                if (!this.instantiate(param, rhs, state.params.rhs)) {
+                    console.log('ERROR: failed to insatiate');
                     return false;
                 }
 
@@ -322,7 +443,8 @@ export namespace TypeLang {
                 // instances. The reason we capture all of them is to maximise
                 // type inferrence (type holes)
                 for (const x of instances) {
-                    if (!this.unify(x, rhs, params, captured)) {
+                    if (!this.unify(x, rhs, UnityState.empty())) {
+                        console.log('ERROR: failed to unify captures');
                         return false;
                     }
                 }
@@ -337,6 +459,7 @@ export namespace TypeLang {
                 throw Error('cannot unify higher-kinded types');
             }
 
+            // Unify generic function types
             if (lhs.op === TypeOp.Forall || rhs.op === TypeOp.Forall) {
                 const [lresult, lparams] = this.unwrap(lhs);
                 const [rresult, rparams] = this.unwrap(rhs);
@@ -348,65 +471,138 @@ export namespace TypeLang {
                     // This equality is the "exactly" part. If the same
                     // existential AST node is passed in it should unify with
                     // itself
-                    return lresult === rresult;
+                    if (lresult !== rresult) {
+                        console.log('ERROR: failed to unify existential types');
+                        return false;
+                    }
+                    return true;
                 }
 
-                /*
-                    Function type unity
+                // Merge the unwrapped parameters
+                const nextState = new UnityState(
+                    {
+                        lhs: [...state.params.lhs, ...lparams],
+                        rhs: [...state.params.rhs, ...rparams],
+                    },
+                    state.captured,
+                );
 
-                        <T, U>(t: T) -> U ~= <X, Y>(x: X) -> Y
+                // Unify the function types
+                return this.unify(lresult, rresult, nextState);
+            }
 
-                        X ~= T
-                        U ~= Y
+            // Fill type holes
+            if (lhs.op === TypeOp.Hole || rhs.op === TypeOp.Hole) {
+                // If both the left-hand and right-hand side are type holes,
+                // type inferrence information should propogate between the two
+                // holes
+                if (lhs.op === TypeOp.Hole && rhs.op === TypeOp.Hole) {
+                    // It's the same hole
+                    if (lhs.id === rhs.id) {
+                        return true;
+                    }
 
-                    The way to think about function type unity is that the
-                    arguments types of the left-hand side will be assinged to
-                    the arguments of the right-hand side, and the return type of
-                    the right-hand side is assigned to the return type of the
-                    left-hand side. The asymmetry is what gives rise to
-                    contravariance.
-                */
+                    const lhole = this._holes.get(lhs.id);
+                    const rhole = this._holes.get(rhs.id);
 
+                    if (lhole === undefined && rhole === undefined) {
+                        // If both holes are undefined, then we're unifying
+                        // bottom/never with itself
+                        console.log('ERROR: ⊥ ~= ⊥');
+                        return false;
+                    }
+
+                    if (lhole === undefined) this._holes.set(lhs.id, rhole!);
+                    if (rhole === undefined) this._holes.set(rhs.id, lhole!);
+
+                    return true;
+                }
+
+                // Type hole inferrence needs more work
                 throw Error('todo');
             }
 
             if (lhs.op !== rhs.op) {
+                console.log('ERROR: type error');
                 return false;
             }
 
             switch (lhs.op) {
-                // Attempt to infer type of hole. If the hole has already been
-                // inferred, check that the types unify
-                case TypeOp.Hole: {
-                    const type = this._holes.get(lhs.id);
-                    if (type === undefined) {
-                        this._holes.set(lhs.id, rhs);
-                        return true;
-                    }
-                    return this.unify(type, rhs, params, captured);
-                }
-
                 // Nominal types and bound variables only unify with themselves
                 case TypeOp.Ref:
-                case TypeOp.Var:
-                    return lhs.id === (rhs as Var).id;
+                    if (lhs.id !== (rhs as Var).id) {
+                        console.log('ERROR: failed to unify nominal types');
+                        return false;
+                    }
+                    return true;
 
-                case TypeOp.Fun:
-                    // This is duplicating functionality in the forall path
-                    throw Error('todo');
+                case TypeOp.Var:
+                    console.log(
+                        'ERROR: type parameters can be instatiated with arbitrary, unrelated types',
+                    );
+                    return false;
+
+                case TypeOp.Fun: {
+                    // Function type unity
+                    //
+                    // (fun x y) ~= (fun a b)
+                    //
+                    //     a ~= x
+                    //     y ~= b
+                    //
+                    // The way to think about function type unity is that the
+                    // arguments types of the left-hand side will be assinged to
+                    // the arguments of the right-hand side when the function is
+                    // called, and the return type of the right-hand side is
+                    // assigned to the return type of the left-hand side when
+                    // the function returns. The asymmetry is what gives rise to
+                    // contravariance.
+                    const [x, y] = lhs.expr;
+                    const [a, b] = (rhs as Fun).expr;
+                    const r = this.unify(a, x, state.swap());
+                    return r && this.unify(y, b, state);
+                }
 
                 // Type application is unified structurally
                 case TypeOp.Apply: {
                     const [l0, l1] = lhs.expr;
-                    const [r0, r1] = (rhs as Fun | Apply).expr;
-                    const r = this.unify(l0, r0, params, captured);
-                    return r && this.unify(l1, r1, params, captured);
+                    const [r0, r1] = (rhs as Apply).expr;
+                    const r = this.unify(l0, r0, state);
+                    return r && this.unify(l1, r1, state);
                 }
             }
         }
 
-        instantiate(param: Param, type: TypeLang): boolean {
-            throw Error('todo');
+        // Check if the type parameter `param` can be instantiated with the type
+        // `type` which has variables bound to `params`
+        instantiate(param: Param, type: TypeLang, params: Param[]): boolean {
+            // Check if the parameter is constrained
+            if (Array.isArray(param)) {
+                // Check if the type implements the trait
+                const typeTc = TypeCode.encode(TypeCode.compile(type));
+                for (const constr of param) {
+                    const traitTc = TypeCode.encode(TypeCode.compile(constr));
+                    const impl = this._impls.get(traitTc)?.get(typeTc);
+                    if (impl === undefined) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            const kind = this.kind(type, params);
+
+            if (kind === undefined) {
+                throw Error('invalid type expression');
+            }
+
+            // If the parameter and type's kinds match, then the parameter can
+            // be instantiated with that type
+
+            const paramTc = TypeCode.encode(TypeCode.compile(param));
+            const typeTc = TypeCode.encode(TypeCode.compile(kind));
+
+            return paramTc === typeTc;
         }
     }
 }

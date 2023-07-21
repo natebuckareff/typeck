@@ -263,7 +263,7 @@ export class Context {
                 // Infer the type of the applied expression
                 const headInferrence = this.infer(ast.head);
 
-                if (TypeLang.is(headInferrence.type, TypeOp.Foral)) headInferrence.type;
+                // if (TypeLang.is(headInferrence.type, TypeOp.Foral)) headInferrence.type;
 
                 throw Error('todo');
 
@@ -300,7 +300,7 @@ export class Context {
 
     infer(ast: AST.Expr | AST.Type): { type: TypeLang; params?: Map<number, TypeLang.Param> } {
         switch (ast.t) {
-            case 'integer':
+            case 'literal-integer':
                 return { type: { op: TypeOp.Ref, id: 1024 } };
 
             case 'var': {
@@ -322,15 +322,17 @@ export class Context {
                 throw Error('todo');
 
             case 'fun': {
-                const params: TypeLang[] = [];
+                // const params: TypeLang[] = [];
 
-                for (const { type } of ast.params) {
-                    params.push(this.infer(type).type);
-                }
+                // for (const { type } of ast.params) {
+                //     params.push(this.infer(type).type);
+                // }
 
-                params.push(this.infer(ast.ret).type);
+                // params.push(this.infer(ast.ret).type);
 
-                ast.params;
+                // ast.params;
+
+                throw Error('todo');
             }
 
             case 'apply':
@@ -407,16 +409,6 @@ export class Context {
             case 'type-apply':
                 yield* this._normalizeApply(ast.head, ast.args);
                 return;
-        }
-    }
-
-    private *_normalizeTypeParamImpl(param: AST.TypeParamImpl) {
-        // TODO: will need to sort the list of constraints to actually do a
-        // direct comparison
-
-        for (const impl of param.impl) {
-            yield TypeOp.Constr;
-            yield* this._normalizeApply(impl.trait, impl.args);
         }
     }
 
